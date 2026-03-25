@@ -3,7 +3,7 @@
 This guide provides instructions for setting up and running the Alumnx Vector DB locally for development and testing.
 
 ## Prerequisites
-- **Docker** and **Docker Compose** installed.
+- **Docker** and **Docker Compose** installed. (See [Docker Setup Guide](docker_setup.md))
 - **Python 3.12+** (if running without Docker).
 - **uv** (recommended for Python dependency management).
 
