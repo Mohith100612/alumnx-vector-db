@@ -20,7 +20,7 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
-app = FastAPI(title="NexVec", version="1.3.0")
+app = FastAPI(title="Alumnx Vector DB", version="1.3.0")
 
 app.include_router(chunking_router)
 app.include_router(documents_router)
