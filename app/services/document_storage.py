@@ -4,7 +4,7 @@ from typing import BinaryIO
 from app.config import get_config
 
 class DocumentStorageBackend:
-    def save(self, file_id: str, file_name: str, file_obj: BinaryIO) -> str:
+    def save(self, file_id: str, file_name: str, content: bytes) -> str:
         raise NotImplementedError
 
     def get_path(self, file_id: str) -> Path:
@@ -18,12 +18,11 @@ class LocalDocumentStorage(DocumentStorageBackend):
         self.base_path = get_config().document_store_path / "files"
         self.base_path.mkdir(parents=True, exist_ok=True)
 
-    def save(self, file_id: str, file_name: str, file_obj: BinaryIO) -> str:
+    def save(self, file_id: str, file_name: str, content: bytes) -> str:
         extension = Path(file_name).suffix
         file_path = self.base_path / f"{file_id}{extension}"
-        file_obj.seek(0)
         with file_path.open("wb") as f:
-            shutil.copyfileobj(file_obj, f)
+            f.write(content)
         return str(file_path)
 
     def get_path(self, file_id: str) -> Path:

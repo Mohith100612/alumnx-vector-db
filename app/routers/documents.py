@@ -41,9 +41,8 @@ async def upload_document(
 
     doc_id = str(uuid.uuid4())
 
-    # Need to seek 0 because we read it into memory
-    file.file.seek(0)
-    storage.save(doc_id, file.filename, file.file)
+    # Pass the already read bytes
+    storage.save(doc_id, file.filename, file_bytes)
 
     record = {
         "id": doc_id,
