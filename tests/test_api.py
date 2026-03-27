@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,171 +10,233 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
+# ── Fake Embedder ─────────────────────────────────────────────────────
+
 class FakeEmbedder:
-    def __init__(self, model: str) -> None:
-        self.model = model
+    def __init__(self, model_name: str | None = None) -> None:
+        self.model_name = model_name or "test-model"
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        return [[float(len(text)), 1.0, 0.0] for text in texts]
+        return [[float(len(t)), 1.0, 0.0] for t in texts]
 
     def embed_query(self, text: str) -> list[float]:
-        base = float(len(text))
-        return [base, 1.0, 0.0]
+        return [float(len(text)), 1.0, 0.0]
 
 
-def fake_config(tmp_path: Path):
-    return SimpleNamespace(
+# ── In-memory mocks for all three stores ──────────────────────────────
+
+class FakePGVectorStore:
+    def __init__(self):
+        self.data: dict[str, list[float]] = {}
+
+    def init_table(self):
+        pass
+
+    def batch_insert(self, rows):
+        for row in rows:
+            self.data[row["chunk_id"]] = row["embedding"]
+        return len(rows)
+
+    def search_similar(self, query_embedding, k=5):
+        # Return all stored chunk_ids with fake similarity scores
+        results = []
+        for cid in list(self.data.keys())[:k]:
+            results.append({"chunk_id": cid, "similarity_score": 0.95})
+        return results
+
+    def count_embeddings(self):
+        return len(self.data)
+
+    def delete_by_ids(self, chunk_ids):
+        for cid in chunk_ids:
+            self.data.pop(cid, None)
+        return len(chunk_ids)
+
+
+class FakeMySQLStore:
+    def __init__(self):
+        self.data: dict[str, dict] = {}
+
+    def init_table(self):
+        pass
+
+    def batch_insert(self, rows):
+        for row in rows:
+            self.data[row["chunk_id"]] = row.copy()
+        return len(rows)
+
+    def fetch_by_ids(self, chunk_ids):
+        return [self.data[cid] for cid in chunk_ids if cid in self.data]
+
+    def list_sources(self):
+        return sorted(set(r["source"] for r in self.data.values()))
+
+    def count_documents(self):
+        return len(self.data)
+
+    def delete_by_ids(self, chunk_ids):
+        for cid in chunk_ids:
+            self.data.pop(cid, None)
+        return len(chunk_ids)
+
+
+class FakeFlatFileStore:
+    def __init__(self):
+        self.data: dict[str, list[dict]] = {}
+
+    def write_batch(self, source, rows):
+        self.data.setdefault(source, []).extend(rows)
+
+    def list_sources(self):
+        return sorted(self.data.keys())
+
+
+# ── Fixture ───────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
+    cfg = SimpleNamespace(
         chunk_size=10,
         overlap_size=2,
         default_chunking_strategy="fixed_length",
         max_paragraph_size=20,
-        knn_k=5,
-        default_retrieval_strategy={"algorithm": "knn", "distance_metric": "cosine"},
-        embedding_model="models/gemini-embedding-001",
-        output_dimensionality=3,
-        vector_size=3,
-        vector_store_path=tmp_path / "vector_store",
         min_page_text_length=1,
+        default_top_k=5,
+        embedding_model="test-model",
+        vector_dimension=3,
+        vector_store_path=tmp_path / "vector_store",
+        batch_size=100,
+        pg_host="localhost", pg_port=5432, pg_name="test", pg_user="test", pg_password="test",
+        db_host="localhost", db_port=3306, db_name="test", db_user="test", db_password="test",
     )
 
-
-@pytest.fixture()
-def client(monkeypatch):
-    cfg = fake_config(Path("."))
-    monkeypatch.setattr("app.routers.ingest.get_config", lambda: cfg)
+    # Mock config
     monkeypatch.setattr("app.services.ingestion.get_config", lambda: cfg)
     monkeypatch.setattr("app.services.retrieval_service.get_config", lambda: cfg)
     monkeypatch.setattr("app.services.embedding.embedder.get_config", lambda: cfg)
-    monkeypatch.setattr("app.services.store.jsonl_store.get_config", lambda: cfg)
-    monkeypatch.setattr("app.services.ingestion.GeminiEmbedder", FakeEmbedder)
-    monkeypatch.setattr("app.services.retrieval_service.GeminiEmbedder", FakeEmbedder)
+    monkeypatch.setattr("app.services.store.flat_file_store.get_config", lambda: cfg)
+
+    # Mock embedder
+    monkeypatch.setattr("app.services.ingestion.Embedder", FakeEmbedder)
+    monkeypatch.setattr("app.services.retrieval_service.Embedder", FakeEmbedder)
+
+    # Mock all three stores
+    fake_pg = FakePGVectorStore()
+    fake_mysql = FakeMySQLStore()
+    fake_flat = FakeFlatFileStore()
+
+    monkeypatch.setattr("app.services.store.pg_vector_store.init_table", fake_pg.init_table)
+    monkeypatch.setattr("app.services.store.pg_vector_store.batch_insert", fake_pg.batch_insert)
+    monkeypatch.setattr("app.services.store.pg_vector_store.search_similar", fake_pg.search_similar)
+    monkeypatch.setattr("app.services.store.pg_vector_store.count_embeddings", fake_pg.count_embeddings)
+
+    monkeypatch.setattr("app.services.store.mysql_store.init_table", fake_mysql.init_table)
+    monkeypatch.setattr("app.services.store.mysql_store.batch_insert", fake_mysql.batch_insert)
+    monkeypatch.setattr("app.services.store.mysql_store.fetch_by_ids", fake_mysql.fetch_by_ids)
+    monkeypatch.setattr("app.services.store.mysql_store.list_sources", fake_mysql.list_sources)
+    monkeypatch.setattr("app.services.store.mysql_store.count_documents", fake_mysql.count_documents)
+
     monkeypatch.setattr(
-        "app.services.ingestion.extract_pdf_pages",
-        lambda _: [
-            SimpleNamespace(page_number=1, text="alpha beta gamma delta epsilon"),
-            SimpleNamespace(page_number=2, text="zeta eta theta iota kappa"),
-        ],
+        "app.services.store.flat_file_store.FlatFileStore.write_batch",
+        lambda self, source, rows: fake_flat.write_batch(source, rows),
+    )
+    monkeypatch.setattr(
+        "app.services.store.flat_file_store.FlatFileStore.list_sources",
+        lambda self: fake_flat.list_sources(),
     )
 
-    data_store: dict[str, list[dict]] = {}
-
-    class DummyPath:
-        def __init__(self, kb_name: str) -> None:
-            self._kb_name = kb_name
-
-        @property
-        def stem(self) -> str:
-            return self._kb_name
-
-        def exists(self) -> bool:
-            return self._kb_name in data_store
-
-    def _kb_path(kb_name: str):
-        return DummyPath(kb_name)
-
-    def _list_kb_files():
-        return [_kb_path(kb_name) for kb_name in sorted(data_store)]
-
-    def _read_rows(kb_name: str):
-        return [row.copy() for row in data_store.get(kb_name, [])]
-
-    def _write_rows(kb_name: str, rows):
-        data_store[kb_name] = _read_rows(kb_name) + [row.copy() for row in rows]
-
-    def _update_rows(kb_name: str, rows):
-        data_store[kb_name] = [row.copy() for row in rows]
-
-    monkeypatch.setattr("app.services.store.jsonl_store.JSONLStore.ensure_store_path", lambda self: None)
-    monkeypatch.setattr("app.services.store.jsonl_store.JSONLStore.kb_path", lambda self, kb_name: _kb_path(kb_name))
-    monkeypatch.setattr("app.services.store.jsonl_store.JSONLStore.list_kb_files", lambda self: _list_kb_files())
-    monkeypatch.setattr("app.services.store.jsonl_store.JSONLStore.read_rows", lambda self, kb_name: _read_rows(kb_name))
-    monkeypatch.setattr("app.services.store.jsonl_store.JSONLStore.write_rows", lambda self, kb_name, rows: _write_rows(kb_name, rows))
-    monkeypatch.setattr("app.services.store.jsonl_store.JSONLStore.update_rows", lambda self, kb_name, rows: _update_rows(kb_name, rows))
-
-    test_client = TestClient(app)
-    test_client.vector_store_path = cfg.vector_store_path
-    yield test_client
+    yield TestClient(app)
 
 
-def test_retrieval_strategies_lists_ann_as_unsupported(client):
-    response = client.get("/retrieval-strategies")
+# ── Tests ─────────────────────────────────────────────────────────────
+
+
+def test_ingest_chunks_stores_to_all_three_tiers(client):
+    response = client.post("/ingest/chunks", json={
+        "chunks": [
+            {"text": "Alpha beta gamma", "source": "doc1.pdf", "page_number": 1},
+            {"text": "Delta epsilon zeta", "source": "doc1.pdf", "page_number": 2},
+        ]
+    })
     assert response.status_code == 200
     payload = response.json()
-    assert any(item["name"] == "ann" for item in payload["algorithms"])
+    assert payload["count"] == 2
+    assert len(payload["chunks"]) == 2
+    assert all(c["chunk_id"] for c in payload["chunks"])
+    assert all(c["source"] == "doc1.pdf" for c in payload["chunks"])
 
 
-def test_ann_is_rejected_with_400_warning(client):
-    response = client.post(
-        "/retrieve",
-        json={"query": "hello", "retrieval_strategy": {"algorithm": "ann", "distance_metric": "cosine"}},
-    )
+def test_retrieve_returns_results_after_ingest(client):
+    # Ingest first
+    client.post("/ingest/chunks", json={
+        "chunks": [
+            {"text": "machine learning algorithms", "source": "ml.pdf"},
+            {"text": "deep neural networks", "source": "ml.pdf"},
+        ]
+    })
+
+    # Now search
+    response = client.post("/retrieve", json={"query": "neural networks", "k": 2})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["query"] == "neural networks"
+    assert payload["k_used"] == 2
+    assert len(payload["results"]) > 0
+    assert payload["results"][0]["similarity_score"] > 0
+
+
+def test_retrieve_empty_query_rejected(client):
+    response = client.post("/retrieve", json={"query": "   ", "k": 5})
     assert response.status_code == 400
-    payload = response.json()
-    assert payload["error"] == "INVALID_RETRIEVAL_STRATEGY"
-    assert "ann" in payload["message"].lower()
+    assert response.json()["error"] == "EMPTY_QUERY"
 
 
-def test_ingest_creates_vector_store_and_retrieve_groups_results(client):
-    ingest = client.post(
-        "/ingest",
-        files={"file": ("sample.pdf", b"%PDF-1.4 fake", "application/pdf")},
-        data={"kb_name": "Finance KB", "chunking_strategy": "fixed_length"},
-    )
-    assert ingest.status_code == 200
-    payload = ingest.json()
-    assert payload["kb_name"] == "finance_kb"
-    assert client.vector_store_path.exists()
+def test_stats_endpoint(client):
+    client.post("/ingest/chunks", json={
+        "chunks": [
+            {"text": "test chunk one", "source": "test.pdf"},
+        ]
+    })
 
-    retrieve = client.post("/retrieve", json={"query": "alpha", "kb_name": "finance_kb"})
-    assert retrieve.status_code == 200
-    result = retrieve.json()
-    assert result["results"][0]["kb_name"] == "finance_kb"
-    assert result["results"][0]["strategy_results"]
-
-
-def test_ingest_uses_config_defaults_when_strategy_is_omitted(client):
-    ingest = client.post(
-        "/ingest",
-        files={"file": ("sample.pdf", b"%PDF-1.4 fake", "application/pdf")},
-        data={"kb_name": "Defaults KB"},
-    )
-    assert ingest.status_code == 200
-    payload = ingest.json()
-    strategies = [item["strategy_name"] for item in payload["strategies_processed"]]
-    assert strategies == ["fixed_length"]
-
-
-def test_list_knowledgebases_returns_created_kb(client):
-    ingest = client.post(
-        "/ingest",
-        files={"file": ("sample.pdf", b"%PDF-1.4 fake", "application/pdf")},
-        data={"kb_name": "Engineering KB", "chunking_strategy": "fixed_length"},
-    )
-    assert ingest.status_code == 200
-
-    response = client.get("/knowledgebases")
-    assert response.status_code == 200
-    assert "engineering_kb" in response.json()["knowledgebases"]
-
-
-def test_retrieve_can_exclude_embedding_vectors(client):
-    ingest = client.post(
-        "/ingest",
-        files={"file": ("sample.pdf", b"%PDF-1.4 fake", "application/pdf")},
-        data={"kb_name": "Vectors KB", "chunking_strategy": "fixed_length"},
-    )
-    assert ingest.status_code == 200
-
-    response = client.post(
-        "/retrieve",
-        json={
-            "query": "alpha",
-            "kb_name": "vectors_kb",
-            "excludevectors": True,
-        },
-    )
+    response = client.get("/stats")
     assert response.status_code == 200
     payload = response.json()
-    chunks = payload["results"][0]["strategy_results"][0]["chunks"]
-    assert chunks
-    assert "embedding_vector" not in chunks[0]
+    assert payload["pg_embeddings"] == 1
+    assert payload["mysql_documents"] == 1
+
+
+def test_sources_endpoint(client):
+    client.post("/ingest/chunks", json={
+        "chunks": [
+            {"text": "first doc", "source": "alpha.pdf"},
+            {"text": "second doc", "source": "beta.pdf"},
+        ]
+    })
+
+    response = client.get("/sources")
+    assert response.status_code == 200
+    sources = response.json()["sources"]
+    assert "alpha.pdf" in sources
+    assert "beta.pdf" in sources
+
+
+def test_ingest_generates_document_id_from_source(client):
+    response = client.post("/ingest/chunks", json={
+        "chunks": [
+            {"text": "hello world", "source": "My Report 2026.pdf"},
+        ]
+    })
+    assert response.status_code == 200
+    chunk = response.json()["chunks"][0]
+    assert chunk["document_id"] == "my_report_2026"
+
+
+def test_ingest_uses_provided_document_id(client):
+    response = client.post("/ingest/chunks", json={
+        "chunks": [
+            {"text": "hello world", "source": "report.pdf", "document_id": "custom-id-123"},
+        ]
+    })
+    assert response.status_code == 200
+    chunk = response.json()["chunks"][0]
+    assert chunk["document_id"] == "custom-id-123"

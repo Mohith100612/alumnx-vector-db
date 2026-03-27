@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,17 +10,32 @@ import yaml
 
 @dataclass(frozen=True)
 class AppConfig:
+    # Chunking
     chunk_size: int
     overlap_size: int
     default_chunking_strategy: str
     max_paragraph_size: int
-    knn_k: int
-    default_retrieval_strategy: dict[str, str]
-    embedding_model: str
-    output_dimensionality: int
-    vector_size: int
-    vector_store_path: Path
     min_page_text_length: int
+    # Retrieval
+    default_top_k: int
+    # Embedding
+    embedding_model: str
+    vector_dimension: int
+    # Storage
+    vector_store_path: Path
+    batch_size: int
+    # PostgreSQL RDS (pgvector — embeddings only)
+    pg_host: str
+    pg_port: int
+    pg_name: str
+    pg_user: str
+    pg_password: str
+    # MySQL (metadata only)
+    db_host: str
+    db_port: int
+    db_name: str
+    db_user: str
+    db_password: str
 
 
 _CONFIG_CACHE: AppConfig | None = None
@@ -50,13 +66,23 @@ def get_config() -> AppConfig:
         overlap_size=int(raw["overlap_size"]),
         default_chunking_strategy=str(raw["default_chunking_strategy"]),
         max_paragraph_size=int(raw["max_paragraph_size"]),
-        knn_k=int(raw["knn_k"]),
-        default_retrieval_strategy=dict(raw["default_retrieval_strategy"]),
-        embedding_model=str(raw["embedding_model"]),
-        output_dimensionality=int(raw["output_dimensionality"]),
-        vector_size=int(raw["vector_size"]),
+        min_page_text_length=int(raw.get("min_page_text_length", 20)),
+        default_top_k=int(raw.get("default_top_k", 5)),
+        embedding_model=str(raw.get("embedding_model", "all-MiniLM-L6-v2")),
+        vector_dimension=int(raw.get("vector_dimension", 384)),
         vector_store_path=vector_store_path,
-        min_page_text_length=int(raw["min_page_text_length"]),
+        batch_size=int(raw.get("batch_size", 100)),
+        # PostgreSQL
+        pg_host=os.environ.get("PG_HOST", "localhost"),
+        pg_port=int(os.environ.get("PG_PORT", "5432")),
+        pg_name=os.environ.get("PG_NAME", "postgres"),
+        pg_user=os.environ.get("PG_USER", "postgres"),
+        pg_password=os.environ.get("PG_PASSWORD", ""),
+        # MySQL
+        db_host=os.environ.get("DB_HOST", "localhost"),
+        db_port=int(os.environ.get("DB_PORT", "3306")),
+        db_name=os.environ.get("DB_NAME", "alumnx_metadata"),
+        db_user=os.environ.get("DB_USER", "root"),
+        db_password=os.environ.get("DB_PASSWORD", ""),
     )
     return _CONFIG_CACHE
-

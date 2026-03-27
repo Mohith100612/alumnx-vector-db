@@ -4,9 +4,41 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from sentence_transformers import SentenceTransformer
+
 from app.config import get_config
 
 logger = logging.getLogger("nexvec.embedder")
+
+_MODEL_CACHE: dict[str, SentenceTransformer] = {}
+
+
+class Embedder:
+    """Embedding service using sentence-transformers (all-MiniLM-L6-v2)."""
+
+    def __init__(self, model_name: str | None = None) -> None:
+        config = get_config()
+        self.model_name = model_name or config.embedding_model
+
+    @property
+    def model(self) -> SentenceTransformer:
+        if self.model_name not in _MODEL_CACHE:
+            logger.info("Loading sentence-transformer model: %s", self.model_name)
+            _MODEL_CACHE[self.model_name] = SentenceTransformer(self.model_name)
+        return _MODEL_CACHE[self.model_name]
+
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch of text strings. Returns list of 384-dim vectors."""
+        if not texts:
+            return []
+        embeddings = self.model.encode(texts, show_progress_bar=False, batch_size=128)
+        return [vec.tolist() for vec in embeddings]
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a single query string."""
+        embedding = self.model.encode(text, show_progress_bar=False)
+        return embedding.tolist()
+
 
 # Extension → MIME type mapping for supported media files
 _MIME_TYPES: dict[str, str] = {
@@ -52,7 +84,7 @@ class GeminiEmbedder:
             result = client.models.embed_content(
                 model=self.model,
                 contents=batch,
-                config={"output_dimensionality": self.config.output_dimensionality},
+                config={"output_dimensionality": self.config.vector_dimension},
             )
             vectors.extend([emb.values for emb in result.embeddings])
         return vectors

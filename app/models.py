@@ -5,10 +5,36 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
-class RetrievalStrategy(BaseModel):
-    algorithm: str = "knn"
-    distance_metric: str = "cosine"
+# ── Ingest (direct text chunks) ─────────────────────────────────────
 
+
+class ChunkInput(BaseModel):
+    """A single text chunk to ingest."""
+    text: str = Field(..., min_length=1)
+    source: str = Field(..., min_length=1)
+    document_id: Optional[str] = None
+    page_number: Optional[int] = None
+
+
+class IngestChunksRequest(BaseModel):
+    """Request body for POST /ingest/chunks."""
+    chunks: list[ChunkInput] = Field(..., min_length=1)
+
+
+class IngestedChunk(BaseModel):
+    chunk_id: str
+    document_id: str
+    source: str
+    page_number: Optional[int] = None
+
+
+class IngestResponse(BaseModel):
+    message: str
+    count: int
+    chunks: list[IngestedChunk]
+
+
+# ── Legacy / File Ingest ──────────────────────────────────────────
 
 class StrategyResult(BaseModel):
     strategy_name: str
@@ -17,60 +43,49 @@ class StrategyResult(BaseModel):
     vector_size: int
     overwritten: bool
 
-
-class IngestResponse(BaseModel):
+class FileIngestResponse(BaseModel):
     kb_name: str
     source_filename: str
     strategies_processed: list[StrategyResult]
     ingested_at: str
 
 
-class RetrieveRequest(BaseModel):
+# ── Retrieve ────────────────────────────────────────────────────────
+
+
+class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
-    kb_name: Optional[str] = None
-    retrieval_strategy: Optional[RetrievalStrategy] = None
     k: Optional[int] = Field(default=None, ge=1)
-    embedding_model: Optional[str] = None
-    excludevectors: bool = False
 
 
-class ChunkResult(BaseModel):
+class SearchResult(BaseModel):
     chunk_id: str
+    text: str
+    source: str
+    document_id: str
+    page_number: Optional[int] = None
     similarity_score: float
-    chunk_text: str
-    embedding_vector: list[float]
-    source_filename: str
-    chunk_index: int
-    page_number: Optional[int]
     created_at: str
 
 
-class StrategyGroupResult(BaseModel):
-    chunking_strategy: str
-    embedding_model: str
-    chunks: list[ChunkResult]
-
-
-class KBResult(BaseModel):
-    kb_name: str
-    strategy_results: list[StrategyGroupResult]
-
-
-class RetrieveResponse(BaseModel):
+class SearchResponse(BaseModel):
     query: str
-    retrieval_strategy_used: RetrievalStrategy
     k_used: int
-    results: list[KBResult]
+    results: list[SearchResult]
 
 
-class ErrorDetail(BaseModel):
-    source_filename: Optional[str] = None
-    chunking_strategy: Optional[str] = None
-    embedding_model: Optional[str] = None
-    kb_name: Optional[str] = None
+# ── Stats ───────────────────────────────────────────────────────────
+
+
+class StatsResponse(BaseModel):
+    pg_embeddings: int
+    mysql_documents: int
+    flat_file_sources: int
+
+
+# ── Errors ──────────────────────────────────────────────────────────
 
 
 class ErrorResponse(BaseModel):
     error: str
     message: str
-    detail: Optional[ErrorDetail] = None
